@@ -1,6 +1,6 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 // Public read-only RPC proxy (nginx on LA server, no auth required from browser)
-const RPC_URL = 'https://rpc.dinerocoin.org';
+const RPC_URL = 'https://rpc.dinero-coin.com';
 
 const DIN_PER_UNA = 100_000_000;
 
