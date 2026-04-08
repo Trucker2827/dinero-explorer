@@ -1,8 +1,8 @@
-// ── Config ────────────────────────────────────────────────────────────────────
-// Public read-only RPC proxy (nginx on LA server, no auth required from browser)
+// ── Config ─────────────────────────────────────────────────────────────────────
 const RPC_URL = 'https://rpc.dinero-coin.com';
-
 const DIN_PER_UNA = 100_000_000;
+const BLOCKS_PER_PAGE = 10;
+const AUTO_REFRESH_MS = 30_000;
 
 // ── RPC client ─────────────────────────────────────────────────────────────────
 async function rpc(method, params = []) {
@@ -17,22 +17,17 @@ async function rpc(method, params = []) {
   return body.result;
 }
 
-// ── Formatters ─────────────────────────────────────────────────────────────────
+// ── Formatters ──────────────────────────────────────────────────────────────────
 function shortHash(h, n = 16) {
-  if (!h) return '—';
-  return h.length > n * 2 + 3 ? `${h.slice(0, n)}…${h.slice(-8)}` : h;
-}
-
-function formatDIN(una) {
-  if (una == null) return '—';
-  return (una / DIN_PER_UNA).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 8 });
+  if (!h || h.length <= n * 2 + 3) return h || '—';
+  return `${h.slice(0, n)}…${h.slice(-8)}`;
 }
 
 function timeAgo(unix) {
   if (!unix) return '—';
   const diff = Math.floor(Date.now() / 1000) - unix;
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 60)    return `${diff}s ago`;
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
 }
@@ -42,23 +37,35 @@ function fmtDate(unix) {
   return new Date(unix * 1000).toUTCString();
 }
 
-function fmtSize(bytes) {
-  if (bytes == null) return '—';
-  return bytes > 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`;
+function txTypeBadge(tx) {
+  if (!tx) return '';
+  if (tx.is_coinbase) return `<span class="badge badge-green">Coinbase</span>`;
+  const v = tx.version ?? 1;
+  if (v === 4) return `<span class="badge badge-teal">Ring-Covenant</span>`;
+  if (v === 3 || tx.has_confidential_inputs) return `<span class="badge badge-blue">Ring</span>`;
+  if (tx.has_confidential_outputs) return `<span class="badge badge-blue">Private</span>`;
+  return `<span class="badge" style="background:rgba(107,114,128,0.15);color:var(--muted)">Standard</span>`;
 }
 
-// ── Router ─────────────────────────────────────────────────────────────────────
+// ── Router ──────────────────────────────────────────────────────────────────────
 const app = document.getElementById('app');
+let refreshTimer = null;
+
+function clearRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
 
 function route() {
+  clearRefresh();
   const hash = location.hash.slice(1) || '/';
-  const [, page, ...rest] = hash.split('/');
+  const parts = hash.split('/').filter(Boolean);
+  const page = parts[0] || '';
 
-  if (!page || page === '') return renderHome();
-  if (page === 'block') return renderBlock(rest[0]);
-  if (page === 'tx') return renderTx(rest[0]);
-  if (page === 'address') return renderAddress(rest[0]);
-  renderError('Page not found: ' + hash);
+  if (!page)              return renderHome();
+  if (page === 'block')   return renderBlock(parts[1], parts[2]);
+  if (page === 'tx')      return renderTx(parts[1]);
+  if (page === 'address') return renderAddress(parts[1]);
+  renderError('Page not found');
 }
 
 window.addEventListener('hashchange', route);
@@ -69,77 +76,73 @@ document.getElementById('searchForm').addEventListener('submit', e => {
   const q = document.getElementById('searchInput').value.trim();
   if (!q) return;
   document.getElementById('searchInput').value = '';
-  // Height (number), txid (64-char hex), or address
-  if (/^\d+$/.test(q)) {
-    location.hash = `/block/height/${q}`;
-  } else if (/^[0-9a-fA-F]{64}$/.test(q)) {
-    location.hash = `/tx/${q}`;
-  } else {
-    location.hash = `/address/${q}`;
-  }
+  if (/^\d+$/.test(q))            location.hash = `/block/height/${q}`;
+  else if (/^[0-9a-fA-F]{64}$/.test(q)) location.hash = `/tx/${q}`;
+  else                             location.hash = `/address/${q}`;
 });
 
-// ── Loading / Error ────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────────
 function loading() {
   app.innerHTML = `<div class="loading"><span class="spinner"></span>Loading…</div>`;
 }
-
 function renderError(msg) {
   app.innerHTML = `<div class="container"><div class="error">⚠ ${msg}</div></div>`;
 }
+function setFooterHeight(h) {
+  const el = document.getElementById('footerHeight');
+  if (el && h != null) el.textContent = Number(h).toLocaleString();
+}
 
-// ── Home ───────────────────────────────────────────────────────────────────────
+// ── Home ─────────────────────────────────────────────────────────────────────────
 async function renderHome() {
   loading();
   try {
-    const [info, mining] = await Promise.all([
-      rpc('blockchain.getblockchaininfo'),
-      rpc('blockchain.getmininginfo').catch(() => ({})),
-    ]);
-
-    const height = info.blocks ?? info.height ?? 0;
-    document.getElementById('footerHeight').textContent = height.toLocaleString();
-
-    // Fetch last 10 blocks
-    const blockHashes = await Promise.all(
-      Array.from({ length: 10 }, (_, i) => rpc('blockchain.getblockhash', [height - i]))
-    );
-    const blocks = await Promise.all(
-      blockHashes.map(h => rpc('blockchain.getblock', [h, 1]))
-    );
-
-    app.innerHTML = `<div class="container">
-      ${statsBar(info, mining)}
-      <div class="section-title">Latest Blocks</div>
-      <div class="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Height</th>
-              <th>Hash</th>
-              <th>Time</th>
-              <th>Txns</th>
-              <th>Size</th>
-              <th>Miner Reward</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${blocks.map(b => blockRow(b)).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
+    await loadHome();
+    refreshTimer = setInterval(async () => {
+      if (location.hash.slice(1).replace(/^\//, '') === '') await loadHome(true);
+      else clearRefresh();
+    }, AUTO_REFRESH_MS);
   } catch (e) {
     renderError('Cannot reach the Dinero node: ' + e.message);
   }
 }
 
+async function loadHome(silent = false) {
+  const [info, mining] = await Promise.all([
+    rpc('blockchain.getblockchaininfo'),
+    rpc('blockchain.getmininginfo').catch(() => ({})),
+  ]);
+
+  const height = info.blocks ?? 0;
+  setFooterHeight(height);
+
+  const hashes = await Promise.all(
+    Array.from({ length: BLOCKS_PER_PAGE }, (_, i) => rpc('blockchain.getblockhash', [height - i]))
+  );
+  const blocks = await Promise.all(hashes.map(h => rpc('blockchain.getblock', [h, 1])));
+
+  if (!silent) {
+    app.innerHTML = `<div class="container">${statsBar(info, mining)}${latestBlocksTable(blocks)}</div>`;
+  } else {
+    // Soft refresh: update stats + table rows only
+    const statsEl = app.querySelector('.stats-grid');
+    const tableEl = app.querySelector('tbody');
+    if (statsEl) statsEl.outerHTML = statsBar(info, mining);
+    if (tableEl) tableEl.innerHTML = blocks.map(blockRow).join('');
+  }
+}
+
 function statsBar(info, mining) {
-  const supply = info.moneysupply ? parseFloat(info.moneysupply).toLocaleString() : '—';
-  const diff = info.difficulty ? Number(info.difficulty).toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—';
-  const hashrate = mining.networkhashps
-    ? `${(mining.networkhashps / 1e9).toFixed(2)} GH/s`
-    : (info.networkhashps ? `${(info.networkhashps / 1e9).toFixed(2)} GH/s` : '—');
+  const hashrate = mining.networkhashps ?? info.networkhashps ?? null;
+  const hr = hashrate != null
+    ? hashrate > 1e12 ? `${(hashrate/1e12).toFixed(2)} TH/s`
+    : hashrate > 1e9  ? `${(hashrate/1e9).toFixed(2)} GH/s`
+    : `${(hashrate/1e6).toFixed(2)} MH/s`
+    : '—';
+
+  const supply = info.moneysupply
+    ? parseFloat(info.moneysupply).toLocaleString(undefined, {maximumFractionDigits: 0})
+    : '—';
 
   return `<div class="stats-grid">
     <div class="stat-card">
@@ -149,16 +152,16 @@ function statsBar(info, mining) {
     </div>
     <div class="stat-card">
       <div class="stat-label">Difficulty</div>
-      <div class="stat-value">${diff}</div>
+      <div class="stat-value">${info.difficulty ? Number(info.difficulty).toLocaleString() : '—'}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Hashrate</div>
-      <div class="stat-value">${hashrate}</div>
+      <div class="stat-value">${hr}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Money Supply</div>
       <div class="stat-value">${supply}</div>
-      <div class="stat-sub">DIN</div>
+      <div class="stat-sub">DIN circulating</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Privacy Lane</div>
@@ -168,102 +171,103 @@ function statsBar(info, mining) {
   </div>`;
 }
 
+function latestBlocksTable(blocks) {
+  return `<div class="section-title" style="margin-bottom:12px">Latest Blocks <span class="auto-refresh-badge">↻ auto-refresh</span></div>
+  <div class="card">
+    <table>
+      <thead>
+        <tr><th>Height</th><th>Hash</th><th>Time</th><th>Txns</th><th>Nonce</th></tr>
+      </thead>
+      <tbody>${blocks.map(blockRow).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
 function blockRow(b) {
   if (!b) return '';
-  const h = b.height ?? '?';
-  const hash = b.hash ?? b.blockhash ?? '';
-  const txCount = Array.isArray(b.tx) ? b.tx.length : (b.nTx ?? b.ntx ?? '?');
-  const size = b.size ?? b.strippedsize ?? null;
-  const time = b.time ?? b.mediantime ?? null;
-  const subsidy = b.subsidy ?? null;
-
+  const hash  = b.hash ?? '';
+  const h     = b.height ?? '?';
+  const txn   = b.nTx ?? (Array.isArray(b.tx) ? b.tx.length : '?');
+  const time  = b.time ?? null;
+  const nonce = b.nonce ?? '—';
   return `<tr>
-    <td><a href="#/block/${hash}">${h.toLocaleString()}</a></td>
+    <td><a href="#/block/${hash}">${Number(h).toLocaleString()}</a></td>
     <td><a href="#/block/${hash}" class="hash-short mono">${shortHash(hash)}</a></td>
     <td style="color:var(--muted)">${timeAgo(time)}</td>
-    <td>${txCount}</td>
-    <td style="color:var(--muted)">${fmtSize(size)}</td>
-    <td class="mono" style="color:var(--accent2)">${subsidy != null ? formatDIN(subsidy) + ' DIN' : '—'}</td>
+    <td>${txn}</td>
+    <td class="mono" style="color:var(--muted);font-size:11px">${nonce}</td>
   </tr>`;
 }
 
-// ── Block ──────────────────────────────────────────────────────────────────────
-async function renderBlock(hashOrHeight) {
+// ── Block detail ──────────────────────────────────────────────────────────────────
+async function renderBlock(hashOrKeyword, heightStr) {
   loading();
   try {
-    // Allow /block/height/N routing
-    let hash = hashOrHeight;
-    if (/^\d+$/.test(hashOrHeight)) {
-      hash = await rpc('blockchain.getblockhash', [parseInt(hashOrHeight)]);
+    let hash = hashOrKeyword;
+    if (hashOrKeyword === 'height' && heightStr) {
+      hash = await rpc('blockchain.getblockhash', [parseInt(heightStr)]);
+    } else if (/^\d+$/.test(hashOrKeyword)) {
+      hash = await rpc('blockchain.getblockhash', [parseInt(hashOrKeyword)]);
     }
 
-    const b = await rpc('blockchain.getblock', [hash, 2]);
+    const b = await rpc('blockchain.getblock', [hash, 1]);
+    const txids = Array.isArray(b.tx) ? b.tx : [];
     const height = b.height ?? '?';
-    const txs = Array.isArray(b.tx) ? b.tx : [];
 
-    document.getElementById('footerHeight').textContent = (b.confirmations != null && b.height != null)
-      ? (b.height + b.confirmations - 1).toLocaleString() : '—';
+    setFooterHeight(height);
+
+    // Fetch tx details in parallel (cap at 20 for perf)
+    const sample = txids.slice(0, 20);
+    const txDetails = await Promise.all(
+      sample.map(txid => rpc('gettransaction', [txid]).catch(() => null))
+    );
+
+    const prevLink = b.previousblockhash
+      ? `<a href="#/block/${b.previousblockhash}" class="hash">${shortHash(b.previousblockhash)}</a>`
+      : '<span style="color:var(--muted)">genesis</span>';
 
     app.innerHTML = `<div class="container">
       <div class="detail-card">
-        <div class="detail-title">
-          <span class="badge badge-blue">Block</span>
-          #${height.toLocaleString()}
-        </div>
+        <div class="detail-title"><span class="badge badge-blue">Block</span> #${Number(height).toLocaleString()}</div>
         <div class="detail-grid">
           <span class="detail-label">Hash</span>
           <span class="detail-value hash">${b.hash ?? hash}</span>
 
           <span class="detail-label">Previous</span>
-          <span class="detail-value">
-            ${b.previousblockhash
-              ? `<a href="#/block/${b.previousblockhash}" class="hash">${shortHash(b.previousblockhash)}</a>`
-              : '<span style="color:var(--muted)">genesis</span>'}
-          </span>
-
-          <span class="detail-label">Next</span>
-          <span class="detail-value">
-            ${b.nextblockhash
-              ? `<a href="#/block/${b.nextblockhash}" class="hash">${shortHash(b.nextblockhash)}</a>`
-              : '<span style="color:var(--muted)">—</span>'}
-          </span>
+          <span class="detail-value">${prevLink}</span>
 
           <span class="detail-label">Time</span>
-          <span class="detail-value">${fmtDate(b.time)}</span>
-
-          <span class="detail-label">Confirmations</span>
-          <span class="detail-value">${b.confirmations != null ? b.confirmations.toLocaleString() : '—'}</span>
+          <span class="detail-value">${fmtDate(b.time)} <span style="color:var(--muted)">(${timeAgo(b.time)})</span></span>
 
           <span class="detail-label">Transactions</span>
-          <span class="detail-value">${txs.length}</span>
-
-          <span class="detail-label">Size</span>
-          <span class="detail-value">${fmtSize(b.size)}</span>
-
-          <span class="detail-label">Difficulty</span>
-          <span class="detail-value">${b.difficulty ? Number(b.difficulty).toLocaleString() : '—'}</span>
+          <span class="detail-value">${txids.length}</span>
 
           <span class="detail-label">Nonce</span>
-          <span class="detail-value">${b.nonce ?? '—'}</span>
+          <span class="detail-value mono">${b.nonce ?? '—'}</span>
+
+          <span class="detail-label">Bits</span>
+          <span class="detail-value mono">${b.bits != null ? b.bits.toString(16).padStart(8,'0') : '—'}</span>
 
           <span class="detail-label">Merkle Root</span>
           <span class="detail-value hash" style="font-size:11px">${b.merkleroot ?? '—'}</span>
+
+          <span class="detail-label">Utreexo</span>
+          <span class="detail-value hash" style="font-size:11px">${b.utreexocommitment ?? '—'}</span>
         </div>
       </div>
 
-      <div class="section-title">Transactions (${txs.length})</div>
+      <div class="section-title">Transactions (${txids.length}${txids.length > 20 ? ', showing first 20' : ''})</div>
       <div class="card">
         <table>
           <thead>
-            <tr>
-              <th>TXID</th>
-              <th>Inputs</th>
-              <th>Outputs</th>
-              <th>Type</th>
-            </tr>
+            <tr><th>TXID</th><th>Type</th><th>Inputs</th><th>Outputs</th><th>Total Out</th></tr>
           </thead>
           <tbody>
-            ${txs.map(tx => txRowFromBlock(tx)).join('')}
+            ${txDetails.map((tx, i) => txRowBlock(txids[i], tx)).join('')}
+            ${txids.slice(20).map(txid => `<tr>
+              <td><a href="#/tx/${txid}" class="hash-short mono">${shortHash(txid)}</a></td>
+              <td colspan="4" style="color:var(--muted)">—</td>
+            </tr>`).join('')}
           </tbody>
         </table>
       </div>
@@ -273,95 +277,92 @@ async function renderBlock(hashOrHeight) {
   }
 }
 
-function txRowFromBlock(tx) {
-  if (!tx) return '';
-  const txid = tx.txid ?? tx.hash ?? '';
-  const vins = Array.isArray(tx.vin) ? tx.vin.length : '?';
-  const vouts = Array.isArray(tx.vout) ? tx.vout.length : '?';
-  const isCoinbase = Array.isArray(tx.vin) && tx.vin[0]?.coinbase != null;
-  const hasPrivate = Array.isArray(tx.vin) && tx.vin.some(v => v.key_image || v.ring_members);
-  const version = tx.version ?? 1;
+function txRowBlock(txid, tx) {
+  const id = txid ?? tx?.txid ?? '';
+  if (!tx) return `<tr>
+    <td><a href="#/tx/${id}" class="hash-short mono">${shortHash(id)}</a></td>
+    <td colspan="4" style="color:var(--muted)">—</td>
+  </tr>`;
 
-  let badge = '';
-  if (isCoinbase) badge = `<span class="badge badge-green">Coinbase</span>`;
-  else if (version === 4) badge = `<span class="badge badge-teal">Ring-Covenant</span>`;
-  else if (version === 3) badge = `<span class="badge badge-blue">Ring</span>`;
-  else if (hasPrivate) badge = `<span class="badge badge-blue">Private</span>`;
+  const totalOut = tx.total_output_value_din != null
+    ? `${parseFloat(tx.total_output_value_din).toFixed(2)} DIN` : '—';
 
   return `<tr>
-    <td><a href="#/tx/${txid}" class="hash-short mono">${shortHash(txid)}</a></td>
-    <td>${vins}</td>
-    <td>${vouts}</td>
-    <td>${badge}</td>
+    <td><a href="#/tx/${id}" class="hash-short mono">${shortHash(id)}</a></td>
+    <td>${txTypeBadge(tx)}</td>
+    <td>${tx.input_count ?? '?'}</td>
+    <td>${tx.output_count ?? '?'}</td>
+    <td class="mono" style="color:var(--accent2)">${totalOut}</td>
   </tr>`;
 }
 
-// ── Transaction ────────────────────────────────────────────────────────────────
+// ── Transaction detail ─────────────────────────────────────────────────────────
 async function renderTx(txid) {
   loading();
   try {
     const tx = await rpc('gettransaction', [txid]);
     if (!tx) throw new Error('not found');
 
-    const isCoinbase = Array.isArray(tx.vin) && tx.vin[0]?.coinbase != null;
-    const version = tx.version ?? 1;
-    const hasPrivate = version >= 3;
+    const inputs  = tx.inputs  ?? [];
+    const outputs = tx.outputs ?? [];
 
-    let typeLabel = 'Standard';
-    if (isCoinbase) typeLabel = 'Coinbase';
-    else if (version === 4) typeLabel = 'Ring-Covenant (v4)';
-    else if (version === 3) typeLabel = 'Ring (v3)';
+    const blockLink = tx.blockhash
+      ? `<a href="#/block/${tx.blockhash}" class="hash">${shortHash(tx.blockhash)}</a>`
+        + (tx.blockheight != null ? ` <span style="color:var(--muted)">(#${Number(tx.blockheight).toLocaleString()})</span>` : '')
+      : '<span style="color:var(--muted)">unconfirmed</span>';
 
     app.innerHTML = `<div class="container">
       <div class="detail-card">
-        <div class="detail-title">
-          <span class="badge badge-blue">Transaction</span>
-        </div>
+        <div class="detail-title">${txTypeBadge(tx)} Transaction</div>
         <div class="detail-grid">
           <span class="detail-label">TXID</span>
           <span class="detail-value hash">${tx.txid ?? txid}</span>
 
           <span class="detail-label">Block</span>
-          <span class="detail-value">
-            ${tx.blockhash
-              ? `<a href="#/block/${tx.blockhash}" class="hash">${shortHash(tx.blockhash)}</a>`
-                + (tx.blockheight != null ? ` <span style="color:var(--muted)">(#${tx.blockheight.toLocaleString()})</span>` : '')
-              : '<span style="color:var(--muted)">unconfirmed</span>'}
-          </span>
+          <span class="detail-value">${blockLink}</span>
 
           <span class="detail-label">Confirmations</span>
-          <span class="detail-value">${tx.confirmations != null ? tx.confirmations.toLocaleString() : '0'}</span>
+          <span class="detail-value">${tx.confirmations != null ? Number(tx.confirmations).toLocaleString() : '0'}</span>
 
-          <span class="detail-label">Time</span>
-          <span class="detail-value">${tx.blocktime ? fmtDate(tx.blocktime) : (tx.time ? fmtDate(tx.time) : 'unconfirmed')}</span>
-
-          <span class="detail-label">Type</span>
-          <span class="detail-value">${typeLabel}</span>
+          <span class="detail-label">Status</span>
+          <span class="detail-value">${tx.status === 'confirmed'
+            ? '<span style="color:var(--success)">✓ Confirmed</span>'
+            : '<span style="color:var(--muted)">Pending</span>'}</span>
 
           <span class="detail-label">Version</span>
-          <span class="detail-value">${version}</span>
+          <span class="detail-value">${tx.version ?? '—'}</span>
 
-          <span class="detail-label">Size</span>
-          <span class="detail-value">${fmtSize(tx.size ?? tx.vsize)}</span>
+          <span class="detail-label">Type</span>
+          <span class="detail-value">${tx.classification ?? '—'}</span>
 
-          ${tx.fee != null ? `
-          <span class="detail-label">Fee</span>
-          <span class="detail-value" style="color:var(--muted)">${Math.abs(tx.fee).toFixed(8)} DIN</span>
-          ` : ''}
+          <span class="detail-label">Total Output</span>
+          <span class="detail-value mono" style="color:var(--accent2)">${tx.total_output_value_din != null
+            ? parseFloat(tx.total_output_value_din).toFixed(8) + ' DIN' : '—'}</span>
+
+          ${tx.has_confidential_inputs || tx.has_confidential_outputs ? `
+          <span class="detail-label">Privacy</span>
+          <span class="detail-value">
+            ${tx.has_confidential_inputs ? '<span class="confidential-badge">Private Inputs</span> ' : ''}
+            ${tx.has_confidential_outputs ? '<span class="confidential-badge">Private Outputs</span>' : ''}
+          </span>` : ''}
         </div>
       </div>
 
       <div class="two-col">
         <div>
-          <div class="section-title">Inputs (${(tx.vin ?? []).length})</div>
+          <div class="section-title">Inputs (${inputs.length})</div>
           <div class="detail-card" style="padding:16px">
-            ${(tx.vin ?? []).map(inp => inputBlock(inp)).join('')}
+            ${inputs.length === 0
+              ? '<div style="color:var(--muted)">No inputs</div>'
+              : inputs.map(inp => inputRow(inp, tx.is_coinbase)).join('')}
           </div>
         </div>
         <div>
-          <div class="section-title">Outputs (${(tx.vout ?? []).length})</div>
+          <div class="section-title">Outputs (${outputs.length})</div>
           <div class="detail-card" style="padding:16px">
-            ${(tx.vout ?? []).map(out => outputBlock(out)).join('')}
+            ${outputs.length === 0
+              ? '<div style="color:var(--muted)">No outputs</div>'
+              : outputs.map(out => outputRow(out)).join('')}
           </div>
         </div>
       </div>
@@ -371,53 +372,66 @@ async function renderTx(txid) {
   }
 }
 
-function inputBlock(inp) {
-  if (inp.coinbase) {
-    return `<div class="io-row">
-      <div><div class="io-label">Coinbase</div><div class="mono" style="font-size:11px;color:var(--muted)">${inp.coinbase.slice(0, 40)}…</div></div>
-      <div class="io-amount">New coins</div>
-    </div>`;
-  }
-  if (inp.key_image) {
-    const ringSize = Array.isArray(inp.ring_members) ? inp.ring_members.length : '?';
+function inputRow(inp, isCoinbase) {
+  if (isCoinbase) return `<div class="io-row">
+    <div><div class="io-label">Coinbase — newly minted coins</div></div>
+    <div class="io-amount">New coins</div>
+  </div>`;
+
+  if (inp.is_private || inp.ring_size) {
     return `<div class="io-row">
       <div>
-        <div class="confidential-badge">Private Input · Ring-${ringSize}</div>
-        <div class="mono" style="font-size:10px;color:var(--muted);margin-top:4px">Key image: ${shortHash(inp.key_image, 12)}</div>
+        <div class="confidential-badge">Private Input · Ring-${inp.ring_size ?? 16}</div>
+        ${inp.key_image ? `<div class="mono" style="font-size:10px;color:var(--muted);margin-top:4px">Key image: ${shortHash(inp.key_image, 12)}</div>` : ''}
       </div>
       <div class="io-amount">hidden</div>
     </div>`;
   }
-  const addr = inp.prevout?.scriptpubkey_address ?? inp.address ?? '';
+
+  const prev = inp.prevout_txid && inp.prevout_txid !== '0'.repeat(64)
+    ? `<a href="#/tx/${inp.prevout_txid}" class="mono" style="font-size:11px">${shortHash(inp.prevout_txid)}:${inp.prevout_vout ?? 0}</a>`
+    : '';
+
   return `<div class="io-row">
     <div>
-      ${addr ? `<a href="#/address/${addr}" class="mono hash-short" style="font-size:11px">${shortHash(addr, 20)}</a>` : '<span class="mono" style="font-size:11px;color:var(--muted)">unknown</span>'}
-      <div class="io-label">${inp.txid ? shortHash(inp.txid, 10) + ':' + inp.vout : ''}</div>
+      ${prev || '<span style="color:var(--muted);font-size:11px">unknown</span>'}
     </div>
-    <div class="io-amount">${inp.prevout?.value != null ? formatDIN(inp.prevout.value * DIN_PER_UNA) + ' DIN' : '—'}</div>
+    <div class="io-amount">—</div>
   </div>`;
 }
 
-function outputBlock(out) {
-  if (out.is_confidential || out.confidential) {
+function outputRow(out) {
+  if (out.is_confidential || out.amount_hidden) {
     return `<div class="io-row">
       <div><div class="confidential-badge">Confidential Output</div></div>
       <div class="io-amount">hidden</div>
     </div>`;
   }
-  const addr = out.scriptpubkey_address ?? out.address
-    ?? out.scriptPubKey?.addresses?.[0]
-    ?? out.scriptPubKey?.address ?? '';
-  const val = out.value ?? (out.amount != null ? out.amount : null);
+
+  const val  = out.value_din ?? out.display_amount ?? null;
+  const type = out.type ?? '';
+
+  // Try to extract address from scriptPubKey (taproot = P2TR)
+  const spk  = out.scriptPubKey ?? '';
+  let addrDisplay = '';
+  if (out.address) {
+    addrDisplay = `<a href="#/address/${out.address}" class="mono hash-short" style="font-size:11px">${shortHash(out.address, 22)}</a>`;
+  } else if (type === 'legacy' && spk.startsWith('6a')) {
+    addrDisplay = `<span style="color:var(--muted);font-size:11px">OP_RETURN</span>`;
+  } else if (spk) {
+    addrDisplay = `<span class="mono" style="font-size:10px;color:var(--muted)">${shortHash(spk, 14)}</span>`;
+  }
+
   return `<div class="io-row">
     <div>
-      ${addr ? `<a href="#/address/${addr}" class="mono hash-short" style="font-size:11px">${shortHash(addr, 22)}</a>` : '<span style="color:var(--muted);font-size:11px">non-standard</span>'}
+      ${addrDisplay}
+      ${type && type !== 'legacy' ? `<div style="color:var(--muted);font-size:11px;margin-top:2px">${type}</div>` : ''}
     </div>
-    <div class="io-amount">${val != null ? Number(val).toFixed(8) + ' DIN' : '—'}</div>
+    <div class="io-amount">${val != null ? parseFloat(val).toFixed(8) + ' DIN' : '—'}</div>
   </div>`;
 }
 
-// ── Address ────────────────────────────────────────────────────────────────────
+// ── Address ───────────────────────────────────────────────────────────────────
 async function renderAddress(addr) {
   loading();
   try {
@@ -426,20 +440,22 @@ async function renderAddress(addr) {
       rpc('blockchain.getaddresshistory', [addr]).catch(() => []),
     ]);
 
-    const balance = balInfo?.balance ?? balInfo?.confirmed ?? null;
-    const txList = Array.isArray(history) ? history : (history?.txids ?? []);
+    const balance     = balInfo?.balance ?? balInfo?.confirmed ?? balInfo?.total ?? null;
+    const unconfirmed = balInfo?.unconfirmed ?? null;
+    const txList      = Array.isArray(history) ? history
+                      : (history?.txids ?? history?.transactions ?? []);
 
     app.innerHTML = `<div class="container">
       <div class="detail-card">
-        <div class="detail-title">
-          <span class="badge badge-teal">Address</span>
-        </div>
+        <div class="detail-title"><span class="badge badge-teal">Address</span></div>
         <div class="mono hash" style="word-break:break-all;margin-bottom:16px;font-size:13px">${addr}</div>
         <div class="balance-display">
-          ${balance != null ? formatDIN(balance) : '—'}
+          ${balance != null ? parseFloat(balance).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:8}) : '—'}
           <span class="balance-unit">DIN</span>
         </div>
-        ${balInfo?.unconfirmed ? `<div style="color:var(--muted);font-size:12px;margin-top:4px">+ ${formatDIN(balInfo.unconfirmed)} DIN unconfirmed</div>` : ''}
+        ${unconfirmed && parseFloat(unconfirmed) !== 0
+          ? `<div style="color:var(--muted);font-size:12px;margin-top:4px">+ ${parseFloat(unconfirmed).toFixed(8)} DIN unconfirmed</div>`
+          : ''}
       </div>
 
       <div class="section-title">Transactions (${txList.length})</div>
@@ -452,12 +468,16 @@ async function renderAddress(addr) {
             ${txList.length === 0
               ? `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:24px">No transactions found</td></tr>`
               : txList.map(t => {
-                  const txid = typeof t === 'string' ? t : (t.txid ?? t.hash ?? JSON.stringify(t));
-                  const height = t.height ?? null;
+                  const txid   = typeof t === 'string' ? t : (t.txid ?? t.hash ?? '');
+                  const height = t.height ?? t.blockheight ?? null;
                   return `<tr>
                     <td><a href="#/tx/${txid}" class="hash-short mono">${shortHash(txid)}</a></td>
-                    <td>${height != null ? `<a href="#/block/height/${height}">#${height.toLocaleString()}</a>` : '<span style="color:var(--muted)">unconfirmed</span>'}</td>
-                    <td>${height != null ? '<span class="badge badge-green">Confirmed</span>' : '<span style="color:var(--muted)">Pending</span>'}</td>
+                    <td>${height != null
+                      ? `<a href="#/block/height/${height}">#${Number(height).toLocaleString()}</a>`
+                      : '<span style="color:var(--muted)">unconfirmed</span>'}</td>
+                    <td>${height != null
+                      ? '<span class="badge badge-green">Confirmed</span>'
+                      : '<span style="color:var(--muted)">Pending</span>'}</td>
                   </tr>`;
                 }).join('')}
           </tbody>
