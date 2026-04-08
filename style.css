@@ -58,7 +58,7 @@ header .container {
   text-decoration: none;
 }
 .logo:hover { text-decoration: none; color: var(--accent2); }
-.logo-icon { color: var(--accent); font-size: 22px; }
+.logo-icon { width: 28px; height: 28px; color: var(--accent); flex-shrink: 0; }
 
 .search-form {
   display: flex;
