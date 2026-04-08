@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dinero Explorer</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
+</head>
+<body>
+  <header>
+    <div class="container">
+      <a href="#/" class="logo">
+        <span class="logo-icon">◈</span>
+        <span class="logo-text">Dinero Explorer</span>
+      </a>
+      <form class="search-form" id="searchForm">
+        <input type="text" id="searchInput" placeholder="Search block height, tx hash, or address…" autocomplete="off" spellcheck="false">
+        <button type="submit">Search</button>
+      </form>
+    </div>
+  </header>
+
+  <main id="app">
+    <div class="loading">Loading…</div>
+  </main>
+
+  <footer>
+    <div class="container">
+      <span>Dinero Network · <span id="footerHeight">—</span> blocks</span>
+      <span>Built on <a href="https://pages.github.com" target="_blank" rel="noopener">GitHub Pages</a></span>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
