@@ -116,8 +116,11 @@ async function loadHome(silent = false) {
   const height = info.blocks ?? 0;
   setFooterHeight(height);
 
+  // Clamp the fetch count so a freshly-reset chain (height = 0, only genesis)
+  // doesn't try to fetch negative block heights.
+  const rowCount = Math.min(BLOCKS_PER_PAGE, height + 1);
   const hashes = await Promise.all(
-    Array.from({ length: BLOCKS_PER_PAGE }, (_, i) => rpc('blockchain.getblockhash', [height - i]))
+    Array.from({ length: rowCount }, (_, i) => rpc('blockchain.getblockhash', [height - i]))
   );
   const blocks = await Promise.all(hashes.map(h => rpc('blockchain.getblock', [h, 1])));
 
