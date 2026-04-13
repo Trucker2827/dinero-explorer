@@ -13,7 +13,16 @@ async function rpc(method, params = []) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const body = await res.json();
+  // Some dinerod RPCs report errors via the JSON-RPC `error` field, and
+  // others wrap the error inside `result` as `{"error": "reason"}`. The
+  // latter is how e.g. blockchain.getblock responds to an unknown hash.
+  // Without this check the caller would get the error object back and
+  // treat it like a normal result, which is how the Latest Blocks table
+  // was rendering rows of NaN when LA was stuck (Apr 13 2026).
   if (body.error) throw new Error(body.error.message || JSON.stringify(body.error));
+  if (body.result && typeof body.result === 'object' && body.result.error) {
+    throw new Error(String(body.result.error));
+  }
   return body.result;
 }
 
@@ -119,10 +128,17 @@ async function loadHome(silent = false) {
   // Clamp the fetch count so a freshly-reset chain (height = 0, only genesis)
   // doesn't try to fetch negative block heights.
   const rowCount = Math.min(BLOCKS_PER_PAGE, height + 1);
-  const hashes = await Promise.all(
+  // Use allSettled so one bad hash/block doesn't blow up the whole table.
+  // If the driver node is partially out of sync, prefer to show whatever
+  // blocks we can fetch rather than a blank page.
+  const hashResults = await Promise.allSettled(
     Array.from({ length: rowCount }, (_, i) => rpc('blockchain.getblockhash', [height - i]))
   );
-  const blocks = await Promise.all(hashes.map(h => rpc('blockchain.getblock', [h, 1])));
+  const hashes = hashResults.map(r => (r.status === 'fulfilled' ? r.value : null));
+  const blockResults = await Promise.allSettled(
+    hashes.map(h => (h ? rpc('blockchain.getblock', [h, 1]) : Promise.resolve(null)))
+  );
+  const blocks = blockResults.map(r => (r.status === 'fulfilled' ? r.value : null));
 
   if (!silent) {
     app.innerHTML = `<div class="container">${statsBar(info, mining)}${latestBlocksTable(blocks)}</div>`;
@@ -187,14 +203,29 @@ function latestBlocksTable(blocks) {
 }
 
 function blockRow(b) {
-  if (!b) return '';
+  // Tolerate null (fetch failed) or an error shape so we render a
+  // placeholder row instead of producing `NaN` / blank columns.
+  if (!b || typeof b !== 'object' || b.error) {
+    return `<tr>
+      <td>—</td>
+      <td class="hash-short mono">—</td>
+      <td style="color:var(--muted)">—</td>
+      <td>?</td>
+      <td class="mono" style="color:var(--muted);font-size:11px">—</td>
+    </tr>`;
+  }
   const hash  = b.hash ?? '';
-  const h     = b.height ?? '?';
+  const h     = b.height;
   const txn   = b.nTx ?? (Array.isArray(b.tx) ? b.tx.length : '?');
   const time  = b.time ?? null;
   const nonce = b.nonce ?? '—';
+  // Guard Number() against non-numeric heights so a malformed field
+  // doesn't surface as "NaN" in the table.
+  const heightStr = (typeof h === 'number' && Number.isFinite(h))
+    ? h.toLocaleString()
+    : '—';
   return `<tr>
-    <td><a href="#/block/${hash}">${Number(h).toLocaleString()}</a></td>
+    <td><a href="#/block/${hash}">${heightStr}</a></td>
     <td><a href="#/block/${hash}" class="hash-short mono">${shortHash(hash)}</a></td>
     <td style="color:var(--muted)">${timeAgo(time)}</td>
     <td>${txn}</td>
