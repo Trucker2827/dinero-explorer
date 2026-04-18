@@ -182,11 +182,6 @@ function statsBar(info, mining) {
       <div class="stat-value">${supply}</div>
       <div class="stat-sub">DIN circulating</div>
     </div>
-    <div class="stat-card">
-      <div class="stat-label">Privacy Lane</div>
-      <div class="stat-value" style="color:var(--success)">Active</div>
-      <div class="stat-sub">Ring-16 · CT</div>
-    </div>
   </div>`;
 }
 
