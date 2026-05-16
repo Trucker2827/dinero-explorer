@@ -46,6 +46,26 @@ function fmtDate(unix) {
   return new Date(unix * 1000).toUTCString();
 }
 
+function formatHashrate(hashrate) {
+  if (hashrate == null || !Number.isFinite(Number(hashrate))) return '—';
+  const hr = Number(hashrate);
+  if (hr >= 1e12) return `${(hr / 1e12).toFixed(2)} TH/s`;
+  if (hr >= 1e9) return `${(hr / 1e9).toFixed(2)} GH/s`;
+  if (hr >= 1e6) return `${(hr / 1e6).toFixed(2)} MH/s`;
+  if (hr >= 1e3) return `${(hr / 1e3).toFixed(2)} KH/s`;
+  return `${hr.toFixed(2)} H/s`;
+}
+
+function formatNBits(bits) {
+  if (bits == null) return '—';
+  if (typeof bits === 'string') {
+    const clean = bits.trim().replace(/^0x/i, '');
+    return clean ? `0x${clean.padStart(8, '0')}` : '—';
+  }
+  const n = Number(bits);
+  return Number.isFinite(n) ? `0x${(n >>> 0).toString(16).padStart(8, '0')}` : '—';
+}
+
 function txTypeBadge(tx) {
   if (!tx) return '';
   if (tx.is_coinbase) return `<span class="badge badge-green">Coinbase</span>`;
@@ -141,23 +161,19 @@ async function loadHome(silent = false) {
   const blocks = blockResults.map(r => (r.status === 'fulfilled' ? r.value : null));
 
   if (!silent) {
-    app.innerHTML = `<div class="container">${statsBar(info, mining)}${latestBlocksTable(blocks)}</div>`;
+    app.innerHTML = `<div class="container">${statsBar(info, mining, blocks[0])}${latestBlocksTable(blocks)}</div>`;
   } else {
     // Soft refresh: update stats + table rows only
     const statsEl = app.querySelector('.stats-grid');
     const tableEl = app.querySelector('tbody');
-    if (statsEl) statsEl.outerHTML = statsBar(info, mining);
+    if (statsEl) statsEl.outerHTML = statsBar(info, mining, blocks[0]);
     if (tableEl) tableEl.innerHTML = blocks.map(blockRow).join('');
   }
 }
 
-function statsBar(info, mining) {
-  const hashrate = mining.networkhashps ?? info.networkhashps ?? null;
-  const hr = hashrate != null
-    ? hashrate > 1e12 ? `${(hashrate/1e12).toFixed(2)} TH/s`
-    : hashrate > 1e9  ? `${(hashrate/1e9).toFixed(2)} GH/s`
-    : `${(hashrate/1e6).toFixed(2)} MH/s`
-    : '—';
+function statsBar(info, mining, tipBlock) {
+  const hashrate = mining.networkhashps ?? mining.hashespersec ?? info.networkhashps ?? null;
+  const nbits = tipBlock?.bits ?? mining.nbits ?? mining.bits ?? info.nbits ?? null;
 
   const supply = info.moneysupply
     ? parseFloat(info.moneysupply).toLocaleString(undefined, {maximumFractionDigits: 0})
@@ -170,12 +186,14 @@ function statsBar(info, mining) {
       <div class="stat-sub">${info.chain ?? ''} network</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Difficulty</div>
-      <div class="stat-value">${info.difficulty ? Number(info.difficulty).toLocaleString() : '—'}</div>
+      <div class="stat-label">nBits</div>
+      <div class="stat-value">${formatNBits(nbits)}</div>
+      <div class="stat-sub">tip compact target</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Hashrate</div>
-      <div class="stat-value">${hr}</div>
+      <div class="stat-label">Network Hashrate</div>
+      <div class="stat-value">${formatHashrate(hashrate)}</div>
+      <div class="stat-sub">RPC estimate</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Money Supply</div>
@@ -190,7 +208,7 @@ function latestBlocksTable(blocks) {
   <div class="card">
     <table>
       <thead>
-        <tr><th>Height</th><th>Hash</th><th>Time</th><th>Txns</th><th>Nonce</th></tr>
+        <tr><th>Height</th><th>Hash</th><th>Time</th><th>Txns</th><th>nBits</th><th>Nonce</th></tr>
       </thead>
       <tbody>${blocks.map(blockRow).join('')}</tbody>
     </table>
@@ -207,6 +225,7 @@ function blockRow(b) {
       <td style="color:var(--muted)">—</td>
       <td>?</td>
       <td class="mono" style="color:var(--muted);font-size:11px">—</td>
+      <td class="mono" style="color:var(--muted);font-size:11px">—</td>
     </tr>`;
   }
   const hash  = b.hash ?? '';
@@ -214,6 +233,7 @@ function blockRow(b) {
   const txn   = b.nTx ?? (Array.isArray(b.tx) ? b.tx.length : '?');
   const time  = b.time ?? null;
   const nonce = b.nonce ?? '—';
+  const nbits = formatNBits(b.bits);
   // Guard Number() against non-numeric heights so a malformed field
   // doesn't surface as "NaN" in the table.
   const heightStr = (typeof h === 'number' && Number.isFinite(h))
@@ -224,6 +244,7 @@ function blockRow(b) {
     <td><a href="#/block/${hash}" class="hash-short mono">${shortHash(hash)}</a></td>
     <td style="color:var(--muted)">${timeAgo(time)}</td>
     <td>${txn}</td>
+    <td class="mono" style="color:var(--muted);font-size:11px">${nbits}</td>
     <td class="mono" style="color:var(--muted);font-size:11px">${nonce}</td>
   </tr>`;
 }
@@ -274,8 +295,8 @@ async function renderBlock(hashOrKeyword, heightStr) {
           <span class="detail-label">Nonce</span>
           <span class="detail-value mono">${b.nonce ?? '—'}</span>
 
-          <span class="detail-label">Bits</span>
-          <span class="detail-value mono">${b.bits != null ? b.bits.toString(16).padStart(8,'0') : '—'}</span>
+          <span class="detail-label">nBits</span>
+          <span class="detail-value mono">${formatNBits(b.bits)}</span>
 
           <span class="detail-label">Merkle Root</span>
           <span class="detail-value hash" style="font-size:11px">${b.merkleroot ?? '—'}</span>
