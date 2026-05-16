@@ -113,6 +113,16 @@ main .container { max-width: 1100px; margin: 0 auto; padding: 0 20px; }
 .stat-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
 .stat-value { font-family: var(--font); font-size: 18px; font-weight: 700; margin-top: 4px; color: var(--accent2); }
 .stat-sub { color: var(--muted); font-size: 11px; margin-top: 2px; font-family: var(--font); }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.status-pill.ok { background: rgba(34,197,94,0.15); color: var(--success); }
+.status-pill.warn { background: rgba(245,158,11,0.16); color: #f59e0b; }
+.status-pill.danger { background: rgba(239,68,68,0.16); color: var(--danger); }
 
 /* ── Section ── */
 .section-title {
@@ -131,7 +141,7 @@ main .container { max-width: 1100px; margin: 0 auto; padding: 0 20px; }
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow-x: auto;
 }
 .card-header {
   padding: 14px 20px;
@@ -205,6 +215,52 @@ tr:hover td { background: var(--bg3); }
 }
 .detail-label { color: var(--muted); font-size: 12px; padding-top: 2px; }
 .detail-value { font-family: var(--font); font-size: 12px; word-break: break-all; }
+.detail-help {
+  display: block;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.maturity-card { border-color: rgba(93,224,192,0.28); }
+.maturity-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+}
+.maturity-main {
+  font-family: var(--font);
+  color: var(--accent2);
+  font-size: 18px;
+  font-weight: 700;
+}
+.maturity-sub, .maturity-eta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.maturity-eta {
+  font-family: var(--font);
+  text-align: right;
+  min-width: 180px;
+}
+.progress-track {
+  height: 8px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 16px;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+}
+@media (max-width: 700px) {
+  .maturity-row { display: block; }
+  .maturity-eta { text-align: left; min-width: 0; }
+}
 
 /* ── Tx IO ── */
 .io-row {

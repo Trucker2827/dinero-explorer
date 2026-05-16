@@ -3,6 +3,8 @@ const RPC_URL = 'https://rpc.dinero-coin.com';
 const DIN_PER_UNA = 100_000_000;
 const BLOCKS_PER_PAGE = 10;
 const AUTO_REFRESH_MS = 30_000;
+const COINBASE_MATURITY = 100;
+const TARGET_SPACING_SEC = 120;
 
 // ── RPC client ─────────────────────────────────────────────────────────────────
 async function rpc(method, params = []) {
@@ -64,6 +66,78 @@ function formatNBits(bits) {
   }
   const n = Number(bits);
   return Number.isFinite(n) ? `0x${(n >>> 0).toString(16).padStart(8, '0')}` : '—';
+}
+
+function nBitsNumber(bits) {
+  if (bits == null) return null;
+  if (typeof bits === 'string') {
+    const clean = bits.trim().replace(/^0x/i, '');
+    if (!/^[0-9a-fA-F]+$/.test(clean)) return null;
+    return Number.parseInt(clean, 16) >>> 0;
+  }
+  const n = Number(bits);
+  return Number.isFinite(n) ? (n >>> 0) : null;
+}
+
+function nBitsTargetHex(bits) {
+  const compact = nBitsNumber(bits);
+  if (compact == null) return '—';
+
+  const exponent = compact >>> 24;
+  const mantissa = compact & 0x007fffff;
+  if (mantissa === 0 || (compact & 0x00800000)) return 'invalid';
+
+  let target = BigInt(mantissa);
+  if (exponent <= 3) {
+    target >>= BigInt(8 * (3 - exponent));
+  } else {
+    target <<= BigInt(8 * (exponent - 3));
+  }
+
+  const maxTarget = (1n << 256n) - 1n;
+  if (target < 0n || target > maxTarget) return 'invalid';
+  return `0x${target.toString(16).padStart(64, '0')}`;
+}
+
+function shortTarget(bits) {
+  const target = nBitsTargetHex(bits);
+  if (target === '—' || target === 'invalid') return target;
+  return shortHash(target.slice(2), 12);
+}
+
+function formatDuration(seconds) {
+  if (seconds == null || !Number.isFinite(Number(seconds))) return '—';
+  const s = Math.max(0, Math.floor(Number(seconds)));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+}
+
+function nodeHealth(info, tipBlock, now = Math.floor(Date.now() / 1000)) {
+  const age = tipBlock?.time ? Math.max(0, now - tipBlock.time) : null;
+  if (info.initialblockdownload) {
+    return { label: 'Catching up', className: 'warn', detail: 'initial block download' };
+  }
+  if (age == null) {
+    return { label: 'Unknown', className: 'warn', detail: 'tip time unavailable' };
+  }
+  if (age > TARGET_SPACING_SEC * 30) {
+    return { label: 'Stale', className: 'danger', detail: `last block ${formatDuration(age)} ago` };
+  }
+  return { label: 'Synced', className: 'ok', detail: `last block ${formatDuration(age)} ago` };
+}
+
+function confirmationCount(tx, chainHeight) {
+  const txHeight = Number(tx?.blockheight ?? tx?.height);
+  const tip = Number(chainHeight);
+  if (Number.isFinite(txHeight) && Number.isFinite(tip) && tip >= txHeight) {
+    return Math.floor(tip - txHeight + 1);
+  }
+
+  const direct = Number(tx?.confirmations);
+  if (Number.isFinite(direct) && direct >= 0) return Math.floor(direct);
+  return 0;
 }
 
 function txTypeBadge(tx) {
@@ -160,20 +234,23 @@ async function loadHome(silent = false) {
   );
   const blocks = blockResults.map(r => (r.status === 'fulfilled' ? r.value : null));
 
+  const updatedAt = Math.floor(Date.now() / 1000);
+
   if (!silent) {
-    app.innerHTML = `<div class="container">${statsBar(info, mining, blocks[0])}${latestBlocksTable(blocks)}</div>`;
+    app.innerHTML = `<div class="container">${statsBar(info, mining, blocks[0], updatedAt)}${latestBlocksTable(blocks)}</div>`;
   } else {
     // Soft refresh: update stats + table rows only
     const statsEl = app.querySelector('.stats-grid');
     const tableEl = app.querySelector('tbody');
-    if (statsEl) statsEl.outerHTML = statsBar(info, mining, blocks[0]);
+    if (statsEl) statsEl.outerHTML = statsBar(info, mining, blocks[0], updatedAt);
     if (tableEl) tableEl.innerHTML = blocks.map(blockRow).join('');
   }
 }
 
-function statsBar(info, mining, tipBlock) {
+function statsBar(info, mining, tipBlock, updatedAt) {
   const hashrate = mining.networkhashps ?? mining.hashespersec ?? info.networkhashps ?? null;
   const nbits = tipBlock?.bits ?? mining.nbits ?? mining.bits ?? info.nbits ?? null;
+  const health = nodeHealth(info, tipBlock, updatedAt);
 
   const supply = info.moneysupply
     ? parseFloat(info.moneysupply).toLocaleString(undefined, {maximumFractionDigits: 0})
@@ -186,14 +263,19 @@ function statsBar(info, mining, tipBlock) {
       <div class="stat-sub">${info.chain ?? ''} network</div>
     </div>
     <div class="stat-card">
+      <div class="stat-label">Node Status</div>
+      <div class="stat-value"><span class="status-pill ${health.className}">${health.label}</span></div>
+      <div class="stat-sub">${health.detail}</div>
+    </div>
+    <div class="stat-card">
       <div class="stat-label">nBits</div>
       <div class="stat-value">${formatNBits(nbits)}</div>
-      <div class="stat-sub">tip compact target</div>
+      <div class="stat-sub">target ${shortTarget(nbits)}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Network Hashrate</div>
       <div class="stat-value">${formatHashrate(hashrate)}</div>
-      <div class="stat-sub">RPC estimate</div>
+      <div class="stat-sub">estimated from recent blocks</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Money Supply</div>
@@ -260,9 +342,17 @@ async function renderBlock(hashOrKeyword, heightStr) {
       hash = await rpc('blockchain.getblockhash', [parseInt(hashOrKeyword)]);
     }
 
-    const b = await rpc('blockchain.getblock', [hash, 1]);
+    const [b, info] = await Promise.all([
+      rpc('blockchain.getblock', [hash, 1]),
+      rpc('blockchain.getblockchaininfo').catch(() => ({})),
+    ]);
     const txids = Array.isArray(b.tx) ? b.tx : [];
     const height = b.height ?? '?';
+    const chainHeight = Number(info.blocks);
+    const blockHeight = Number(height);
+    const confirmations = Number.isFinite(chainHeight) && Number.isFinite(blockHeight) && chainHeight >= blockHeight
+      ? chainHeight - blockHeight + 1
+      : null;
 
     setFooterHeight(height);
 
@@ -289,6 +379,9 @@ async function renderBlock(hashOrKeyword, heightStr) {
           <span class="detail-label">Time</span>
           <span class="detail-value">${fmtDate(b.time)} <span style="color:var(--muted)">(${timeAgo(b.time)})</span></span>
 
+          <span class="detail-label">Confirmations</span>
+          <span class="detail-value">${confirmations != null ? confirmations.toLocaleString() : '—'}<span class="detail-help">block depth in the active chain</span></span>
+
           <span class="detail-label">Transactions</span>
           <span class="detail-value">${txids.length}</span>
 
@@ -297,6 +390,9 @@ async function renderBlock(hashOrKeyword, heightStr) {
 
           <span class="detail-label">nBits</span>
           <span class="detail-value mono">${formatNBits(b.bits)}</span>
+
+          <span class="detail-label">PoW Target</span>
+          <span class="detail-value hash" style="font-size:11px">${nBitsTargetHex(b.bits)}</span>
 
           <span class="detail-label">Merkle Root</span>
           <span class="detail-value hash" style="font-size:11px">${b.merkleroot ?? '—'}</span>
@@ -350,11 +446,16 @@ function txRowBlock(txid, tx) {
 async function renderTx(txid) {
   loading();
   try {
-    const tx = await rpc('gettransaction', [txid]);
+    const [tx, info] = await Promise.all([
+      rpc('gettransaction', [txid]),
+      rpc('blockchain.getblockchaininfo').catch(() => ({})),
+    ]);
     if (!tx) throw new Error('not found');
 
     const inputs  = tx.inputs  ?? [];
     const outputs = tx.outputs ?? [];
+    const confirmations = confirmationCount(tx, info.blocks);
+    const maturity = coinbaseMaturity(tx, confirmations);
 
     const blockLink = tx.blockhash
       ? `<a href="#/block/${tx.blockhash}" class="hash">${shortHash(tx.blockhash)}</a>`
@@ -372,7 +473,7 @@ async function renderTx(txid) {
           <span class="detail-value">${blockLink}</span>
 
           <span class="detail-label">Confirmations</span>
-          <span class="detail-value">${tx.confirmations != null ? Number(tx.confirmations).toLocaleString() : '0'}</span>
+          <span class="detail-value">${confirmations.toLocaleString()}<span class="detail-help">blocks deep, not node count</span></span>
 
           <span class="detail-label">Status</span>
           <span class="detail-value">${tx.status === 'confirmed'
@@ -398,6 +499,8 @@ async function renderTx(txid) {
         </div>
       </div>
 
+      ${maturity}
+
       <div class="two-col">
         <div>
           <div class="section-title">Inputs (${inputs.length})</div>
@@ -420,6 +523,31 @@ async function renderTx(txid) {
   } catch (e) {
     renderError('Transaction not found: ' + e.message);
   }
+}
+
+function coinbaseMaturity(tx, confirmations) {
+  if (!tx?.is_coinbase) return '';
+  const remaining = Math.max(0, COINBASE_MATURITY - confirmations);
+  const progress = Math.min(100, Math.max(0, (confirmations / COINBASE_MATURITY) * 100));
+  const mature = remaining === 0;
+  const estimate = mature
+    ? 'spendable now'
+    : `about ${formatDuration(remaining * TARGET_SPACING_SEC)} remaining at 2-minute target spacing`;
+
+  return `<div class="detail-card maturity-card">
+    <div class="detail-title">
+      <span class="badge ${mature ? 'badge-green' : 'badge-blue'}">${mature ? 'Mature' : 'Immature'}</span>
+      Coinbase Maturity
+    </div>
+    <div class="maturity-row">
+      <div>
+        <div class="maturity-main">${Math.min(confirmations, COINBASE_MATURITY).toLocaleString()} / ${COINBASE_MATURITY.toLocaleString()} confirmations</div>
+        <div class="maturity-sub">${mature ? 'Coinbase reward has reached consensus maturity.' : `${remaining.toLocaleString()} more confirmations before this reward is spendable.`}</div>
+      </div>
+      <div class="maturity-eta">${estimate}</div>
+    </div>
+    <div class="progress-track" aria-hidden="true"><div class="progress-fill" style="width:${progress.toFixed(1)}%"></div></div>
+  </div>`;
 }
 
 function inputRow(inp, isCoinbase) {
