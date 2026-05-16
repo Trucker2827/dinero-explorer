@@ -48,6 +48,15 @@ function fmtDate(unix) {
   return new Date(unix * 1000).toUTCString();
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function formatHashrate(hashrate) {
   if (hashrate == null || !Number.isFinite(Number(hashrate))) return '—';
   const hr = Number(hashrate);
@@ -114,6 +123,22 @@ function formatDuration(seconds) {
   return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
 }
 
+function formatDin(value, digits = 8) {
+  if (value == null || !Number.isFinite(Number(value))) return '—';
+  return `${Number(value).toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: digits,
+  })} DIN`;
+}
+
+function formatBytes(bytes) {
+  if (bytes == null || !Number.isFinite(Number(bytes))) return '—';
+  const b = Number(bytes);
+  if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(2)} MB`;
+  if (b >= 1024) return `${(b / 1024).toFixed(2)} KB`;
+  return `${b.toLocaleString()} B`;
+}
+
 function nodeHealth(info, tipBlock, now = Math.floor(Date.now() / 1000)) {
   const age = tipBlock?.time ? Math.max(0, now - tipBlock.time) : null;
   if (info.initialblockdownload) {
@@ -126,6 +151,121 @@ function nodeHealth(info, tipBlock, now = Math.floor(Date.now() / 1000)) {
     return { label: 'Stale', className: 'danger', detail: `last block ${formatDuration(age)} ago` };
   }
   return { label: 'Synced', className: 'ok', detail: `last block ${formatDuration(age)} ago` };
+}
+
+function hexToBytes(hex) {
+  const clean = String(hex ?? '').trim().toLowerCase();
+  if (!clean || clean.length % 2 !== 0 || /[^0-9a-f]/.test(clean)) return null;
+  const bytes = [];
+  for (let i = 0; i < clean.length; i += 2) {
+    bytes.push(parseInt(clean.slice(i, i + 2), 16));
+  }
+  return bytes;
+}
+
+function bytesToHex(bytes) {
+  return bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function decodeAscii(bytes) {
+  if (!bytes || bytes.length === 0) return '';
+  const text = bytes.map(b => (b >= 32 && b <= 126 ? String.fromCharCode(b) : '.')).join('');
+  const printable = bytes.filter(b => b >= 32 && b <= 126).length;
+  return printable >= Math.max(1, Math.ceil(bytes.length * 0.75)) ? text : '';
+}
+
+const OPCODE_NAMES = {
+  0x00: 'OP_0',
+  0x4c: 'OP_PUSHDATA1',
+  0x4d: 'OP_PUSHDATA2',
+  0x4e: 'OP_PUSHDATA4',
+  0x51: 'OP_1',
+  0x52: 'OP_2',
+  0x53: 'OP_3',
+  0x54: 'OP_4',
+  0x55: 'OP_5',
+  0x56: 'OP_6',
+  0x57: 'OP_7',
+  0x58: 'OP_8',
+  0x59: 'OP_9',
+  0x5a: 'OP_10',
+  0x5b: 'OP_11',
+  0x5c: 'OP_12',
+  0x5d: 'OP_13',
+  0x5e: 'OP_14',
+  0x5f: 'OP_15',
+  0x60: 'OP_16',
+  0x6a: 'OP_RETURN',
+  0x76: 'OP_DUP',
+  0x87: 'OP_EQUAL',
+  0x88: 'OP_EQUALVERIFY',
+  0xa9: 'OP_HASH160',
+  0xac: 'OP_CHECKSIG',
+};
+
+function decodeScriptPubKey(hex) {
+  const bytes = hexToBytes(hex);
+  if (!bytes) return { asm: '', type: 'unknown', isOpReturn: false, opReturnHex: '', opReturnText: '' };
+
+  const asm = [];
+  const pushes = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const op = bytes[i++];
+    if (op >= 0x01 && op <= 0x4b) {
+      const data = bytes.slice(i, i + op);
+      i += op;
+      asm.push(`OP_PUSHBYTES_${op}`);
+      if (data.length) asm.push(bytesToHex(data));
+      pushes.push(data);
+      continue;
+    }
+    if (op === 0x4c && i < bytes.length) {
+      const len = bytes[i++];
+      const data = bytes.slice(i, i + len);
+      i += len;
+      asm.push('OP_PUSHDATA1');
+      asm.push(bytesToHex(data));
+      pushes.push(data);
+      continue;
+    }
+    if (op === 0x4d && i + 1 < bytes.length) {
+      const len = bytes[i] | (bytes[i + 1] << 8);
+      i += 2;
+      const data = bytes.slice(i, i + len);
+      i += len;
+      asm.push('OP_PUSHDATA2');
+      asm.push(bytesToHex(data));
+      pushes.push(data);
+      continue;
+    }
+    asm.push(OPCODE_NAMES[op] ?? `OP_${op.toString(16).padStart(2, '0').toUpperCase()}`);
+  }
+
+  const isOpReturn = bytes[0] === 0x6a;
+  const opReturnBytes = isOpReturn ? pushes.flat() : [];
+  const opReturnHex = opReturnBytes.length ? bytesToHex(opReturnBytes) : '';
+  const opReturnText = decodeAscii(opReturnBytes);
+
+  let type = 'custom';
+  if (isOpReturn) type = 'OP_RETURN';
+  else if (bytes.length === 34 && bytes[0] >= 0x51 && bytes[0] <= 0x60 && bytes[1] === 0x20) type = 'taproot';
+  else if (bytes.length === 22 && bytes[0] === 0x00 && bytes[1] === 0x14) type = 'segwit_v0';
+  else if (bytes.length === 25 && bytes[0] === 0x76 && bytes[1] === 0xa9 && bytes[2] === 0x14 && bytes[23] === 0x88 && bytes[24] === 0xac) type = 'legacy';
+
+  return {
+    asm: asm.join(' '),
+    type,
+    isOpReturn,
+    opReturnHex,
+    opReturnText,
+  };
+}
+
+function outputTypeLabel(out, decoded) {
+  if (decoded?.isOpReturn) return 'OP_RETURN';
+  if (out.type && out.type !== 'legacy') return out.type;
+  return decoded?.type && decoded.type !== 'custom' ? decoded.type : (out.type || 'custom');
 }
 
 function confirmationCount(tx, chainHeight) {
@@ -211,9 +351,11 @@ async function renderHome() {
 }
 
 async function loadHome(silent = false) {
-  const [info, mining] = await Promise.all([
+  const [info, mining, network, mempool] = await Promise.all([
     rpc('blockchain.getblockchaininfo'),
     rpc('blockchain.getmininginfo').catch(() => ({})),
+    rpc('getnetworkinfo').catch(() => null),
+    rpc('getmempoolinfo').catch(() => null),
   ]);
 
   const height = info.blocks ?? 0;
@@ -235,14 +377,17 @@ async function loadHome(silent = false) {
   const blocks = blockResults.map(r => (r.status === 'fulfilled' ? r.value : null));
 
   const updatedAt = Math.floor(Date.now() / 1000);
+  const homeHtml = `${statsBar(info, mining, blocks[0], updatedAt)}${networkPanel(network, mempool)}${latestBlocksTable(blocks)}`;
 
   if (!silent) {
-    app.innerHTML = `<div class="container">${statsBar(info, mining, blocks[0], updatedAt)}${latestBlocksTable(blocks)}</div>`;
+    app.innerHTML = `<div class="container">${homeHtml}</div>`;
   } else {
     // Soft refresh: update stats + table rows only
     const statsEl = app.querySelector('.stats-grid');
+    const networkEl = app.querySelector('.network-panel');
     const tableEl = app.querySelector('tbody');
     if (statsEl) statsEl.outerHTML = statsBar(info, mining, blocks[0], updatedAt);
+    if (networkEl) networkEl.outerHTML = networkPanel(network, mempool);
     if (tableEl) tableEl.innerHTML = blocks.map(blockRow).join('');
   }
 }
@@ -281,6 +426,51 @@ function statsBar(info, mining, tipBlock, updatedAt) {
       <div class="stat-label">Money Supply</div>
       <div class="stat-value">${supply}</div>
       <div class="stat-sub">DIN circulating</div>
+    </div>
+  </div>`;
+}
+
+function networkPanel(network, mempool) {
+  if (!network && !mempool) return '';
+
+  const hasNetwork = Boolean(network);
+  const active = hasNetwork && network.networkactive !== false;
+  const reachable = hasNetwork && network.reachable !== false;
+  const listen = hasNetwork && network.listen !== false;
+  const connections = Number(network?.connections ?? 0);
+  const inbound = Number(network?.connections_in ?? 0);
+  const outbound = Number(network?.connections_out ?? 0);
+  const mempoolSize = Number(mempool?.size ?? 0);
+  const mempoolBytes = Number(mempool?.bytes ?? mempool?.usage ?? 0);
+  const totalFee = mempool?.total_fee;
+  const minRelay = mempool?.minrelaytxfee ?? mempool?.mempoolminfee;
+
+  return `<div class="network-panel">
+    <div class="mini-card">
+      <div class="mini-label">P2P Network</div>
+      <div class="mini-value">
+        <span class="status-pill ${active && reachable ? 'ok' : 'warn'}">${!hasNetwork ? 'Unknown' : active && reachable ? 'Online' : 'Limited'}</span>
+      </div>
+      <div class="mini-grid">
+        <span>Peers</span><strong>${connections.toLocaleString()}</strong>
+        <span>Inbound</span><strong>${inbound.toLocaleString()}</strong>
+        <span>Outbound</span><strong>${outbound.toLocaleString()}</strong>
+        <span>Listen</span><strong>${listen ? 'yes' : 'no'}</strong>
+      </div>
+    </div>
+    <div class="mini-card">
+      <div class="mini-label">Public Port</div>
+      <div class="mini-value">${network?.listen_port ?? '—'}</div>
+      <div class="mini-sub">port mapping: ${escapeHtml(network?.port_mapping?.mode ?? 'unknown')} / ${escapeHtml(network?.port_mapping?.message ?? '—')}</div>
+    </div>
+    <div class="mini-card">
+      <div class="mini-label">Mempool</div>
+      <div class="mini-value">${mempoolSize.toLocaleString()} tx</div>
+      <div class="mini-grid">
+        <span>Size</span><strong>${formatBytes(mempoolBytes)}</strong>
+        <span>Total fee</span><strong>${formatDin(totalFee)}</strong>
+        <span>Min relay</span><strong>${formatDin(minRelay)}</strong>
+      </div>
     </div>
   </div>`;
 }
@@ -588,25 +778,55 @@ function outputRow(out) {
 
   const val  = out.value_din ?? out.display_amount ?? null;
   const type = out.type ?? '';
-
-  // Try to extract address from scriptPubKey (taproot = P2TR)
   const spk  = out.scriptPubKey ?? '';
+  const decoded = decodeScriptPubKey(spk);
+  const typeLabel = outputTypeLabel(out, decoded);
+  const vout = out.vout != null ? `#${out.vout}` : '';
   let addrDisplay = '';
+
   if (out.address) {
     addrDisplay = `<a href="#/address/${out.address}" class="mono hash-short" style="font-size:11px">${shortHash(out.address, 22)}</a>`;
-  } else if (type === 'legacy' && spk.startsWith('6a')) {
-    addrDisplay = `<span style="color:var(--muted);font-size:11px">OP_RETURN</span>`;
+  } else if (decoded.isOpReturn) {
+    addrDisplay = `<span class="op-return-preview">${decoded.opReturnText
+      ? escapeHtml(decoded.opReturnText)
+      : (decoded.opReturnHex ? shortHash(decoded.opReturnHex, 18) : 'OP_RETURN')}</span>`;
   } else if (spk) {
     addrDisplay = `<span class="mono" style="font-size:10px;color:var(--muted)">${shortHash(spk, 14)}</span>`;
   }
 
   return `<div class="io-row">
     <div>
+      <div class="io-meta">
+        ${vout ? `<span class="output-index">${vout}</span>` : ''}
+        <span class="badge ${decoded.isOpReturn ? 'badge-amber' : 'badge-blue'}">${escapeHtml(typeLabel)}</span>
+      </div>
       ${addrDisplay}
-      ${type && type !== 'legacy' ? `<div style="color:var(--muted);font-size:11px;margin-top:2px">${type}</div>` : ''}
+      ${scriptDetails(spk, decoded)}
     </div>
     <div class="io-amount">${val != null ? parseFloat(val).toFixed(8) + ' DIN' : '—'}</div>
   </div>`;
+}
+
+function scriptDetails(spk, decoded) {
+  if (!spk) return '';
+  const opReturnText = decoded.opReturnText
+    ? `<span class="script-label">OP_RETURN data</span><span class="op-return-data">${escapeHtml(decoded.opReturnText)}</span>`
+    : decoded.opReturnHex
+      ? `<span class="script-label">OP_RETURN data</span><span class="script-value">${escapeHtml(decoded.opReturnHex)}</span>`
+      : '';
+
+  return `<details class="script-details">
+    <summary>Script details</summary>
+    <div class="script-grid">
+      <span class="script-label">ASM</span>
+      <span class="script-value">${escapeHtml(decoded.asm || '—')}</span>
+      <span class="script-label">HEX</span>
+      <span class="script-value">${escapeHtml(spk)}</span>
+      ${opReturnText}
+      <span class="script-label">Type</span>
+      <span class="script-value">${escapeHtml(decoded.type || 'unknown')}</span>
+    </div>
+  </details>`;
 }
 
 // ── Address ───────────────────────────────────────────────────────────────────

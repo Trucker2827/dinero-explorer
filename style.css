@@ -191,6 +191,56 @@ tr:hover td { background: var(--bg3); }
 .badge-blue { background: rgba(124,106,247,0.15); color: var(--accent); }
 .badge-green { background: rgba(34,197,94,0.15); color: var(--success); }
 .badge-teal { background: rgba(93,224,192,0.15); color: var(--accent2); }
+.badge-amber { background: rgba(245,158,11,0.16); color: #f59e0b; }
+
+/* ── Network snapshot ── */
+.network-panel {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr 1fr;
+  gap: 12px;
+  margin: -12px 0 32px;
+}
+.mini-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+}
+.mini-label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mini-value {
+  font-family: var(--font);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent2);
+  margin-top: 4px;
+}
+.mini-sub {
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 11px;
+  margin-top: 8px;
+}
+.mini-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--font);
+}
+.mini-grid strong {
+  color: var(--text);
+  font-weight: 600;
+}
+@media (max-width: 800px) {
+  .network-panel { grid-template-columns: 1fr; }
+}
 
 /* ── Detail page ── */
 .detail-card {
@@ -274,6 +324,52 @@ tr:hover td { background: var(--bg3); }
 .io-row:last-child { border-bottom: none; }
 .io-amount { color: var(--accent2); white-space: nowrap; font-weight: 600; }
 .io-label { color: var(--muted); font-size: 11px; }
+.io-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.output-index {
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 11px;
+}
+.op-return-preview {
+  display: inline-block;
+  color: #f59e0b;
+  font-family: var(--font);
+  font-size: 11px;
+  max-width: 100%;
+  word-break: break-word;
+}
+.script-details {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.script-details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.script-details summary:hover { color: var(--accent2); }
+.script-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+.script-label {
+  color: var(--muted);
+  font-family: var(--sans);
+}
+.script-value, .op-return-data {
+  color: var(--text);
+  font-family: var(--font);
+  word-break: break-all;
+}
+.op-return-data { color: #f59e0b; }
 .confidential-badge {
   display: inline-block;
   padding: 2px 8px;
