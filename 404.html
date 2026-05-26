@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dinero Explorer</title>
+  <script>
+    (function () {
+      var target = '/';
+      if (window.location.hash) {
+        target += window.location.search + window.location.hash;
+      } else if (window.location.pathname !== '/') {
+        target += '#' + window.location.pathname + window.location.search;
+      } else {
+        target += window.location.search;
+      }
+      window.location.replace(target);
+    }());
+  </script>
+</head>
+<body>
+  <p>Redirecting to Dinero Explorer.</p>
+  <p><a href="/">Open Dinero Explorer</a></p>
+</body>
+</html>
