@@ -1,5 +1,5 @@
 // ── Config ─────────────────────────────────────────────────────────────────────
-const RPC_URL = 'https://rpc.dinero-coin.com';
+const RPC_URL = 'https://rpc.realmoneyforfreepeople.org';
 const DIN_PER_UNA = 100_000_000;
 const BLOCKS_PER_PAGE = 10;
 const AUTO_REFRESH_MS = 30_000;
